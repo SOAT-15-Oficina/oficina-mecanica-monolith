@@ -1,0 +1,206 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**/*.md", "docs/adr/**"]
+  pull_request:
+    branches: [main]
+    paths-ignore: ["**/*.md", "docs/adr/**"]
+
+# Repositorio privado: os 2.000 min/mes sao compartilhados entre os 4 repos.
+# Push novo em PR cancela a execucao anterior.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GO_VERSION: "1.26"
+  SSM_PREFIX: /oficina-mecanica/prod
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint GitHub Actions workflows
+        run: docker run --rm -v "${GITHUB_WORKSPACE}:/repo" -w /repo rhysd/actionlint:latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # O contrato deste repo NAO inclui /auth/* -- essas rotas vivem no
+      # oficina-mecanica-serverless. internal/routes/openapi_test.go garante que
+      # o swagger e as rotas registradas nao divergem.
+      - name: Validate OpenAPI contract
+        run: npx --yes @redocly/cli@1.34.5 lint workshop --config redocly.yaml
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: techchallenge
+          POSTGRES_PASSWORD: ${{ secrets.CI_DATABASE_PASSWORD }}
+          POSTGRES_DB: techchallenge-db
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U techchallenge -d techchallenge-db"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Test with coverage
+        run: go test ./... -coverprofile=coverage.out -covermode=atomic
+        env:
+          DATABASE_HOST: localhost
+          DATABASE_PORT: 5432
+          DATABASE_USER: techchallenge
+          DATABASE_PASSWORD: ${{ secrets.CI_DATABASE_PASSWORD }}
+          DATABASE_NAME: techchallenge-db
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 1
+
+  # SonarQube self-hosted efemero. Roda so em PR para main: e o job mais caro
+  # (~90s so de boot) e nao ha historico a preservar entre execucoes, por isso o
+  # Quality Gate e avaliado sobre o codigo todo, nao sobre "new code".
+  quality:
+    if: github.event_name == 'pull_request'
+    needs: [test]
+    runs-on: ubuntu-latest
+    services:
+      sonarqube:
+        image: sonarqube:lts-community
+        env:
+          SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+        ports: ["9000:9000"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage
+
+      - name: Wait for SonarQube
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:9000/api/system/status | grep -q '"status":"UP"'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "SonarQube nao subiu a tempo"
+          exit 1
+
+      - name: Provision scanner token
+        run: |
+          NEW_PASS="$(openssl rand -hex 20)"
+          curl -sf -u admin:admin -X POST \
+            "http://localhost:9000/api/users/change_password" \
+            -d "login=admin&previousPassword=admin&password=${NEW_PASS}" >/dev/null
+          TOKEN="$(curl -sf -u "admin:${NEW_PASS}" -X POST \
+            "http://localhost:9000/api/user_tokens/generate" \
+            -d "name=ci-${GITHUB_RUN_ID}" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          echo "SONAR_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Scan and wait for Quality Gate
+        run: |
+          docker run --rm --network host \
+            -e SONAR_HOST_URL=http://localhost:9000 \
+            -e SONAR_TOKEN="$SONAR_TOKEN" \
+            -v "${GITHUB_WORKSPACE}:/usr/src" \
+            sonarsource/sonar-scanner-cli:latest \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.qualitygate.timeout=300
+
+  build-and-deploy:
+    if: github.event_name == 'push'
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Contrato entre repos: o oficina-mecanica-infrastructure publica os
+      # identificadores dos recursos no SSM. Nada de nome de recurso hardcoded.
+      - name: Resolve infrastructure outputs
+        run: |
+          get() { aws ssm get-parameter --name "${SSM_PREFIX}/$1" --query Parameter.Value --output text; }
+          {
+            echo "ECR_REPOSITORY_URL=$(get ecr_repository_url)"
+            echo "EKS_CLUSTER_NAME=$(get eks_cluster_name)"
+            echo "KUBE_NAMESPACE=$(get kube_namespace)"
+            echo "API_DEPLOYMENT_NAME=$(get api_deployment_name)"
+          } >> "$GITHUB_ENV"
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        run: |
+          IMAGE="${ECR_REPOSITORY_URL}:${GITHUB_SHA}"
+          docker build --tag "$IMAGE" --tag "${ECR_REPOSITORY_URL}:latest" .
+          docker push "$IMAGE"
+          docker push "${ECR_REPOSITORY_URL}:latest"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME"
+
+      # Migrations rodam como Job antes do rollout. Rodar no boot com
+      # replicas>=2 e HPA ate 10 seria corrida de DDL entre replicas.
+      - name: Run migrations
+        run: |
+          JOB="migrate-${GITHUB_SHA::12}"
+          kubectl -n "$KUBE_NAMESPACE" delete job "$JOB" --ignore-not-found
+          kubectl -n "$KUBE_NAMESPACE" create job "$JOB" --image="$IMAGE" -- /techchallenge migrate
+          kubectl -n "$KUBE_NAMESPACE" patch job "$JOB" --type=strategic -p \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"'"$JOB"'","envFrom":[{"configMapRef":{"name":"api-config"}},{"secretRef":{"name":"api-secrets"}}]}]}}}}'
+          kubectl -n "$KUBE_NAMESPACE" wait --for=condition=complete "job/$JOB" --timeout=300s \
+            || { kubectl -n "$KUBE_NAMESPACE" logs "job/$JOB" --tail=200; exit 1; }
+
+      # O Deployment e criado pelo Terraform no oficina-mecanica-infrastructure,
+      # com lifecycle.ignore_changes na imagem: a tag e propriedade deste
+      # pipeline, o resto do manifesto e propriedade do repo de infra.
+      - name: Deploy
+        run: |
+          kubectl -n "$KUBE_NAMESPACE" set image \
+            "deployment/${API_DEPLOYMENT_NAME}" "api=${IMAGE}"
+          kubectl -n "$KUBE_NAMESPACE" rollout status \
+            "deployment/${API_DEPLOYMENT_NAME}" --timeout=300s
+
+      - name: Smoke check
+        run: |
+          kubectl -n "$KUBE_NAMESPACE" port-forward "deployment/${API_DEPLOYMENT_NAME}" 18080:8080 &
+          trap 'kill %1 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:18080/ready >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:18080/ping | grep -Fx Pong
+          curl -sf http://127.0.0.1:18080/docs/swagger.yaml > /tmp/served-swagger.yaml
+          cmp docs/swagger.yaml /tmp/served-swagger.yaml

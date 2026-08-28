@@ -1,0 +1,60 @@
+# Sobe o monolito isolado: API + Postgres + MailHog.
+#
+# Sem o painel web (vive em oficina-mecanica-frontend) e sem a Lambda de
+# autenticacao (oficina-mecanica-serverless). Para exercitar o fluxo completo
+# com as tres pecas juntas, use o docker-compose.local.yml do
+# oficina-mecanica-infrastructure.
+#
+# Como este compose nao tem a Lambda, nao ha /auth/login: gere um token de teste
+# com `go run ./tests/tools/token` ou aponte APP_BASE_URL para o agregador.
+services:
+  api:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "${SERVER_PORT}:${SERVER_PORT}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mailhog:
+        condition: service_started
+
+  # As migrations deixaram de rodar no boot da API (ver cmd/api/main.go).
+  # Localmente isso vira um container one-shot; no cluster, um Job.
+  migrate:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    command: ["migrate"]
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: oficina-monolith-mailhog
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  db:
+    build:
+      context: ./database
+      dockerfile: Dockerfile
+    container_name: oficina-monolith-postgres
+    environment:
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
+    ports:
+      - "${DATABASE_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER} -d ${DATABASE_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

@@ -1,0 +1,22 @@
+# Binarios
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Testes e cobertura
+*.test
+*.out
+.scannerwork/
+
+vendor/
+go.work
+
+# IDEs
+.vscode
+.idea
+
+# Ambiente
+.env
+*.local.yaml
