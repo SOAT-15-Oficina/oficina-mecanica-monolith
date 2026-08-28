@@ -178,13 +178,37 @@ jobs:
 
       # Migrations rodam como Job antes do rollout. Rodar no boot com
       # replicas>=2 e HPA ate 10 seria corrida de DDL entre replicas.
+      # O Job vai de uma vez, com envFrom ja no manifesto. Nao da para criar e
+      # depois dar patch: `spec.template` de um Job e IMUTAVEL, e o patch falha
+      # com "field is immutable" -- depois de o Job ja ter sido criado sem as
+      # variaveis de ambiente.
       - name: Run migrations
         run: |
           JOB="migrate-${GITHUB_SHA::12}"
           kubectl -n "$KUBE_NAMESPACE" delete job "$JOB" --ignore-not-found
-          kubectl -n "$KUBE_NAMESPACE" create job "$JOB" --image="$IMAGE" -- /techchallenge migrate
-          kubectl -n "$KUBE_NAMESPACE" patch job "$JOB" --type=strategic -p \
-            '{"spec":{"template":{"spec":{"containers":[{"name":"'"$JOB"'","envFrom":[{"configMapRef":{"name":"api-config"}},{"secretRef":{"name":"api-secrets"}}]}]}}}}'
+
+          kubectl -n "$KUBE_NAMESPACE" apply -f - <<YAML
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${JOB}
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: migrate
+                    image: ${IMAGE}
+                    command: ["/techchallenge", "migrate"]
+                    envFrom:
+                      - configMapRef:
+                          name: api-config
+                      - secretRef:
+                          name: api-secrets
+          YAML
+
           kubectl -n "$KUBE_NAMESPACE" wait --for=condition=complete "job/$JOB" --timeout=300s \
             || { kubectl -n "$KUBE_NAMESPACE" logs "job/$JOB" --tail=200; exit 1; }
 
