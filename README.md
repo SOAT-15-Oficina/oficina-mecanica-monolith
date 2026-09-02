@@ -90,29 +90,48 @@ avaliado sobre o código todo, não sobre *new code*.
 
 | Gatilho | O que roda |
 |---|---|
-| PR → `main` | actionlint, `redocly lint`, `go test` com cobertura, SonarQube + Quality Gate |
-| Push → `main` | build da imagem, push no ECR, Job de migration, `kubectl set image`, rollout, smoke check |
+| PR → `main` ou `hml` | actionlint, `redocly lint`, `go test` com cobertura, SonarQube + Quality Gate |
+| Push → `main` ou `hml` | build da imagem, push no ECR, Job de migration, `kubectl set image`, rollout, smoke check |
 
 O deploy autentica por **OIDC** (sem access key) e resolve todos os nomes de
 recurso no **SSM Parameter Store**, publicado pelo repositório de infraestrutura:
 
 | Parâmetro | Uso |
 |---|---|
-| `/oficina-mecanica/prod/ecr_repository_url` | destino do `docker push` |
-| `/oficina-mecanica/prod/eks_cluster_name` | `aws eks update-kubeconfig` |
-| `/oficina-mecanica/prod/kube_namespace` | namespace do Deployment |
-| `/oficina-mecanica/prod/api_deployment_name` | alvo do `set image` |
+| `/oficina-mecanica/<ambiente>/ecr_repository_url` | destino do `docker push` |
+| `/oficina-mecanica/<ambiente>/eks_cluster_name` | `aws eks update-kubeconfig` |
+| `/oficina-mecanica/<ambiente>/kube_namespace` | namespace do Deployment |
+| `/oficina-mecanica/<ambiente>/api_deployment_name` | alvo do `set image` |
 
 O `Deployment` é criado pelo Terraform com `lifecycle.ignore_changes` no campo
 `image`: a **tag** é propriedade deste pipeline, o **resto do manifesto** é
 propriedade do repositório de infraestrutura. Um `terraform apply` nunca reverte
 um release, e um deploy daqui nunca altera probes, recursos ou HPA.
 
+### Dois ambientes
+
+A **branch** escolhe o destino: `hml` publica em homologação, `main` em produção.
+Não há input de ambiente em lugar nenhum deste repositório — o `ref` já carrega a
+informação, e um input separado poderia contradizê-lo.
+
+| | homologação | produção |
+|---|---|---|
+| Branch | `hml` | `main` |
+| GitHub Environment | `homolog` | `production` |
+| Prefixo no SSM | `/oficina-mecanica/homolog` | `/oficina-mecanica/prod` |
+
+Por isso `AWS_DEPLOY_ROLE_ARN` é secret de **GitHub Environment**, não de
+repositório: os dois ambientes usam o mesmo nome de secret e apenas o escopo do
+Environment os separa. A trust policy da role repete a regra do lado da AWS — um
+push em `hml` não obtém credencial de produção.
+
+Arquitetura completa dos dois ambientes: `oficina-mecanica-infrastructure`.
+
 ### Secrets e variables necessários
 
 | Nome | Tipo | Conteúdo |
 |---|---|---|
-| `AWS_DEPLOY_ROLE_ARN` | secret | role assumida por OIDC |
+| `AWS_DEPLOY_ROLE_ARN` | secret de **Environment** (`production` e `homolog`) | role assumida por OIDC |
 | `CI_DATABASE_PASSWORD` | secret | senha do Postgres do job de teste |
 | `AWS_REGION` | variable | `sa-east-1` |
 
