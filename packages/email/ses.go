@@ -87,7 +87,8 @@ func (p *sesProvider) Send(ctx context.Context, msg Message) error {
 	}
 
 	if _, err := p.client.SendEmail(ctx, in); err != nil {
-		// Em sandbox o SES recusa destinatario nao verificado. O erro precisa
+		// O SES recusa envio por varios motivos -- remetente nao verificado,
+		// destinatario em lista de supressao, conta pausada. O erro precisa
 		// chegar inteiro ao chamador, senao a falha vira silencio.
 		return fmt.Errorf("ses: send failed: %w", err)
 	}
