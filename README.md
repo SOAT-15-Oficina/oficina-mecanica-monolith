@@ -23,6 +23,86 @@ e aplica RBAC, mas nunca o emite em produção. A cópia de `AppClaims`/`ParseTo
 em `internal/auth` é intencional — os dois repositórios são independentes, e um
 teste de contrato (`internal/auth/claims_test.go`) protege contra divergência.
 
+## Arquitetura deste repositório
+
+```mermaid
+flowchart TB
+    GW[API Gateway] -->|$default| ALB[ALB interno]
+    ALB --> POD
+
+    subgraph POD [Pod api — Go 1.26 / Fiber v3]
+        direction TB
+        MW["routes/middlewares<br/>Auth (JWT) → RequireRoles"]
+        H[handler<br/>validação, DTOs, tradução de erro]
+        SVC[service<br/>casos de uso]
+        DOM[domain<br/>entidades, enums, transições]
+        PORT[application<br/>portas de persistência e notificação]
+        REPO[repository<br/>adaptadores pgx]
+        MAIL["packages/email<br/>ses | mailhog"]
+    end
+
+    MW --> H --> SVC
+    SVC --> DOM
+    SVC --> PORT
+    PORT -.implementado por.-> REPO
+    PORT -.implementado por.-> MAIL
+    REPO --> DB[(RDS PostgreSQL)]
+    MAIL --> SES[SES]
+
+    JOB[Job migrate<br/>mesma imagem, comando `migrate`] --> DB
+```
+
+As dependências apontam para dentro: `handler` → `service` → `domain`. O que fala
+com o mundo (`repository`, `packages/email`) implementa portas declaradas em
+`application`, e é injetado em `routes/main.go`. `domain` não importa nada dos
+outros pacotes.
+
+**Fluxo de deploy deste repositório:**
+
+```mermaid
+flowchart LR
+    PR[PR] --> L[lint: actionlint + redocly]
+    PR --> T[test: go test + Postgres]
+    PR --> Q[quality: SonarQube efêmero]
+    PUSH[push em hml/main] --> B[build + push no ECR]
+    B --> M[Job migrate]
+    M --> RO[kubectl set image + rollout status]
+    RO --> SM[smoke: /ready, /ping, swagger servido]
+```
+
+## Contrato da API
+
+| | |
+|---|---|
+| OpenAPI (fonte) | [`docs/swagger.yaml`](docs/swagger.yaml) |
+| Swagger UI (ambiente no ar) | `<URL_PUBLICA>/api/docs` |
+| Especificação servida pela aplicação | `<URL_PUBLICA>/api/docs/swagger.yaml` |
+| Local | http://localhost:8080/docs |
+
+O contrato cobre a API de negócio. `POST /auth/login` e `POST /auth/register`
+têm contrato próprio no
+[`oficina-mecanica-serverless`](https://github.com/SOAT-15-Oficina/oficina-mecanica-serverless/blob/main/docs/openapi.yaml).
+
+`internal/routes/openapi_test.go` falha o build se uma rota registrada não
+estiver no swagger, ou vice-versa. O pipeline ainda compara byte a byte o arquivo
+do repositório com o que o pod serve, no smoke check.
+
+## Deploy ativo
+
+O ambiente é **efêmero** — sobe sob demanda e desce depois
+([ADR-0006](https://github.com/SOAT-15-Oficina/oficina-mecanica-infrastructure/blob/main/docs/adr/0006-duas-camadas-de-terraform.md)).
+A URL pública é estável entre ciclos e fica no SSM:
+
+```bash
+aws ssm get-parameter --name /oficina-mecanica/prod/public_base_url \
+  --query Parameter.Value --output text
+```
+
+| Ambiente | URL |
+|---|---|
+| Produção | `/oficina-mecanica/prod/public_base_url` |
+| Homologação | `/oficina-mecanica/homolog/public_base_url` |
+
 ## Estrutura
 
 ```
@@ -147,10 +227,19 @@ Ver `.env.example`. Duas merecem atenção:
 
 ## E-mail
 
-`EMAIL_PROVIDER=mailhog` local, `EMAIL_PROVIDER=ses` em produção. O provider SES
-usa a API v2 e resolve credenciais pela cadeia padrão do SDK — no cluster isso
-cai no **IRSA** do ServiceAccount, então não existe access key em lugar nenhum.
+`EMAIL_PROVIDER=mailhog` apenas no ambiente local. **Nos dois ambientes da
+nuvem — homologação e produção — o provider é `ses`**, fixado no ConfigMap pela
+camada efêmera do `oficina-mecanica-infrastructure`. Não há valor padrão nem
+fallback: provider desconhecido faz o processo falhar no boot
+(`packages/email/email.go`).
 
-O SES opera em **sandbox**: só entrega para endereços verificados, com teto de
-200 e-mails/24h e 1/segundo. Endereço não verificado retorna erro, e o provider
-propaga esse erro em vez de engolir.
+O provider SES usa a API v2 e resolve credenciais pela cadeia padrão do SDK — no
+cluster isso cai no **IRSA** do ServiceAccount, então não existe access key em
+lugar nenhum.
+
+A conta tem **acesso de produção concedido** no SES (região `sa-east-1`), com
+cota de 50.000 e-mails/24h a 14/segundo. Entrega para qualquer destinatário; o
+que continua exigindo verificação é o **remetente** (`SES_SENDER_EMAIL`). Um
+`MessageRejected` ainda é possível — remetente não verificado, destinatário em
+lista de supressão, conta pausada — e o provider propaga esse erro em vez de
+engolir.

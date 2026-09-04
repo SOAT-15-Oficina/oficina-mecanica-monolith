@@ -94,8 +94,8 @@ func TestSESSend_EmptyRecipients(t *testing.T) {
 	assert.ErrorContains(t, err, "recipient list is empty")
 }
 
-// Em sandbox o SES recusa destinatario nao verificado. O erro tem que subir,
-// nao virar silencio.
+// Quando o SES recusa o envio -- MessageRejected e afins -- o erro tem que
+// subir, nao virar silencio.
 func TestSESSend_PropagatesClientError(t *testing.T) {
 	sesErr := errors.New("MessageRejected: Email address is not verified")
 	p := &sesProvider{client: &fakeSESClient{err: sesErr}, from: "oficina@example.com"}
