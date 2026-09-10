@@ -20,6 +20,12 @@ type databasePinger interface {
 }
 
 func RegisterRoutes(app *fiber.App, db *pgxpool.Pool, cfg *config.Config, emailProv email.Provider) {
+	// PRIMEIRO, antes de qualquer rota e antes de Auth (ADR-0011, secao 2): e
+	// ele que resolve o `request_id` e poe o logger no contexto que os handlers
+	// repassam aos servicos. Registrado aqui, e nao no cmd/api, para que o
+	// teste exercite a mesma cadeia que producao.
+	app.Use(middlewares.Observability())
+
 	if db == nil {
 		registerHealthRoutes(app, nil)
 	} else {

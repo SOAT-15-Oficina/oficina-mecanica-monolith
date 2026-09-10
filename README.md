@@ -114,12 +114,63 @@ internal/
   application/      portas de persistência e notificação, erros de aplicação
   domain/           entidades e enums
   handler/          HTTP: validação, DTOs, tradução de erros
+  observability/    slog JSON, taxonomia de campos (ADR-0011) e tracer do APM
   repository/       adaptadores pgx
   routes/           registro de rotas e middlewares
   service/          casos de uso
 packages/email/     provider de e-mail (mailhog | ses) + templates
 tests/tools/token/  emite um JWT de desenvolvimento sem a Lambda
 ```
+
+## Observabilidade
+
+Toda linha de log é JSON, com os mesmos nomes de campo da Lambda de
+autenticação. Quem define esses nomes é a [ADR-0011][adr11] no repositório de
+infraestrutura, e não este repositório: eles são lidos literalmente pelas
+métricas de log, pelos painéis e pelos alertas do Datadog
+(`persistent/datadog_metrics.tf`, `persistent/datadog_monitors.tf`). Renomear um
+campo aqui compila, passa nos testes e esvazia um painel em silêncio — por isso
+os nomes vivem em constantes, em `internal/observability`, e há teste sobre
+eles.
+
+| Campo | De onde vem |
+|---|---|
+| `service`, `env` | `DD_SERVICE` / `DD_ENV`, injetadas pelo Terraform |
+| `version` | SHA do commit, gravado na imagem pelo linker (`--build-arg VERSION`) |
+| `request_id` | header `X-Request-Id`, ou gerado |
+| `route`, `method`, `status`, `duration_ms` | linha de acesso, uma por requisição |
+| `event` | evento de domínio — `work_order.created` e companhia |
+| `integration` | dependência externa em `level=ERROR` — `ses`, `rds` |
+| `work_order_id`, `work_order_code`, `from`, `to`, `decision` | contexto do evento |
+
+**O `request_id` é herdado da borda.** O API Gateway injeta o próprio
+`$context.requestId` como header (*parameter mapping*, no repositório de
+infraestrutura), então o identificador do access log da borda **é** o das linhas
+de dentro do pod. Uma consulta por `@request_id` devolve o rastro inteiro.
+
+O middleware lê o **último** valor do header, não o primeiro: o gateway usa
+`append:`, então um `X-Request-Id` mandado pelo cliente vem antes. Só o último
+nasceu na borda — e o valor passa por um filtro de caracteres antes de virar
+header de resposta, tag de traço e campo de log.
+
+**Eventos de domínio, não texto de mensagem.** O nome do evento vai em `event`;
+`msg` é texto para humano e muda na primeira refatoração. É `@event` que as
+métricas contam e os alertas consultam — inclusive o alerta de falha no
+processamento de OS, que dispara com `@event:work_order.transition_rejected` ou
+com qualquer `ERROR` que carregue `@work_order_id`.
+
+**`/ping` e `/ready` não geram linha de acesso.** O kubelet os chama a cada
+poucos segundos em cada pod: seriam centenas de milhares de linhas por dia
+dizendo que nada aconteceu. O uptime vem do teste sintético, que olha de fora.
+
+**APM.** Com `DD_TRACE_ENABLED=true`, o middleware abre um span por requisição e
+o `dd.trace_id` entra em cada linha de log. Sem a variável, nenhum tracer sobe —
+local não há agente para receber traço.
+
+**Nunca entram em log:** senha, hash, o token, o segredo do JWT e o `document`
+do cliente (CPF/CNPJ é dado pessoal — usa-se `customer_id`).
+
+[adr11]: https://github.com/SOAT-15-Oficina/oficina-mecanica-infrastructure/blob/main/docs/adr/0011-logs-estruturados-com-correlacao.md
 
 ## Rodando local
 
@@ -217,13 +268,18 @@ Arquitetura completa dos dois ambientes: `oficina-mecanica-infrastructure`.
 
 ## Variáveis de ambiente
 
-Ver `.env.example`. Duas merecem atenção:
+Ver `.env.example`. Quatro merecem atenção:
 
 - **`JWT_SECRET_KEY`** — precisa ser byte a byte o mesmo valor da Lambda. Em
   produção vem do Secrets Manager via `kubernetes_secret`.
 - **`APP_BASE_URL`** — usada para montar os links de aprovação enviados ao
   cliente por e-mail (`internal/service/budget_service.go`). Em produção é o
   domínio do CloudFront seguido de `/api`.
+- **`DD_ENV`** — decide o **formato** do log, não só a tag: sem ela o handler é
+  texto (legível no terminal), com ela é JSON. Errar isso não dá erro visível,
+  só um painel vazio.
+- **`DD_TRACE_ENABLED`** — `true` exige um agente alcançável em `DD_AGENT_HOST`.
+  Sem a variável nenhum tracer sobe, e a aplicação funciona igual.
 
 ## E-mail
 
