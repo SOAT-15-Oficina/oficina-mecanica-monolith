@@ -11,6 +11,7 @@ import (
 
 	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/observability"
 	"github.com/gofiber/fiber/v3"
+	recovermw "github.com/gofiber/fiber/v3/middleware/recover"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -208,4 +209,36 @@ func TestObservability_PutsTheRequestLoggerInTheContext(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(lines[0]), &serviceLine))
 	assert.Equal(t, "vindo do servico", serviceLine["msg"])
 	assert.Equal(t, "id-do-gateway", serviceLine[observability.KeyRequestID])
+}
+
+// Um panico no handler e a requisicao que mais se quer ver, e e a unica que
+// hoje nao deixa rastro nenhum: esta aplicacao nao tem middleware de recover,
+// entao o panico sobe ate o fasthttp -- que NAO o captura -- e derruba o
+// processo. A linha de acesso passa a sair antes disso.
+//
+// O middleware de recover aqui e do TESTE, e nao da aplicacao: e o que permite
+// afirmar que o panico continua subindo depois de registrado (sem ele, o
+// re-panico derrubaria o binario de teste junto). Ligar recover em producao e
+// outra decisao, com outra consequencia -- 500 no lugar de pod reiniciado --,
+// e nao cabe num PR de observabilidade.
+func TestObservability_LogsAPanicAndRethrowsIt(t *testing.T) {
+	buf := captureLogs(t)
+
+	app := fiber.New()
+	app.Use(recovermw.New())
+	app.Use(Observability())
+	app.Get("/panic", func(c fiber.Ctx) error {
+		panic("boom")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/panic", nil))
+	require.NoError(t, err)
+
+	// Chegou ao recover do teste: o panico atravessou o middleware.
+	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
+
+	line := accessLine(t, buf)
+	assert.Equal(t, float64(500), line[observability.KeyStatus])
+	assert.Equal(t, "ERROR", line["level"])
+	assert.Contains(t, line[observability.KeyError], "boom")
 }

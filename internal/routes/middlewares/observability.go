@@ -2,6 +2,7 @@ package middlewares
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -50,7 +51,7 @@ var healthProbePaths = map[string]bool{
 // A linha de acesso e a fonte de `oficina.http_request_duration`
 // (persistent/datadog_metrics.tf), que sustenta o painel de latencia por rota.
 func Observability() fiber.Handler {
-	return func(c fiber.Ctx) error {
+	return func(c fiber.Ctx) (err error) {
 		if healthProbePaths[c.Path()] {
 			return c.Next()
 		}
@@ -78,38 +79,62 @@ func Observability() fiber.Handler {
 		logger := slog.Default().With(slog.String(observability.KeyRequestID, requestID))
 		c.SetContext(observability.WithLogger(ctx, logger))
 
-		err := c.Next()
-
-		// A ROTA SO EXISTE DEPOIS DE c.Next(). Antes dele, `c.Route()` ainda e a
-		// rota deste middleware -- e o campo iria para o painel como "/".
+		// A linha de acesso e o span saem num `defer` por causa do PANICO.
 		//
-		// E o PADRAO da rota (`/work-orders/:id`), e nao o caminho concreto: com
-		// o caminho, cada ordem de servico viraria uma serie propria na metrica
-		// e o painel de latencia por rota teria uma linha por OS.
-		route := c.Route().Path
-		status := responseStatus(c, err)
+		// Nao ha middleware de recover nesta aplicacao, entao um panico no
+		// handler sobe ate o fasthttp, que fecha a conexao: hoje ele nao deixa
+		// rastro nenhum -- nem linha de log, nem span, e o span aberto fica
+		// pendurado. E justamente a requisicao que mais se quer ver.
+		//
+		// O panico e re-lancado depois de registrado: o comportamento da
+		// aplicacao nao muda, so deixa de ser invisivel.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				finishRequest(c, span, logger, start, fiber.StatusInternalServerError,
+					fmt.Errorf("panic: %v", recovered))
+				panic(recovered)
+			}
 
-		attrs := []slog.Attr{
-			slog.String(observability.KeyRoute, route),
-			slog.String(observability.KeyMethod, c.Method()),
-			slog.Int(observability.KeyStatus, status),
-			slog.Int(observability.KeyHTTPStatusCode, status),
-			slog.Float64(observability.KeyDurationMS, millisSince(start)),
-		}
-		if claims, ok := c.Locals("token").(*auth.AppClaims); ok && claims != nil {
-			attrs = append(attrs,
-				slog.String(observability.KeyUser, claims.User),
-				slog.String(observability.KeyRole, claims.Role))
-		}
+			finishRequest(c, span, logger, start, responseStatus(c, err), err)
+		}()
 
-		logger.LogAttrs(ctx, accessLevel(status), "request", attrs...)
-
-		span.SetTag(ext.ResourceName, c.Method()+" "+route)
-		span.SetTag(ext.HTTPCode, status)
-		span.Finish(tracer.WithError(spanError(status, err)))
-
+		err = c.Next()
 		return err
 	}
+}
+
+// finishRequest emite a linha de acesso e fecha o span.
+//
+// A ROTA SO PODE SER LIDA AQUI. Antes de `c.Next()`, `c.Route()` ainda e a rota
+// do proprio middleware -- o campo iria para o painel como "/".
+//
+// E e o PADRAO da rota (`/work-orders/:id`), e nao o caminho concreto: com o
+// caminho, cada ordem de servico viraria uma serie propria na metrica e o painel
+// de latencia por rota teria uma linha por OS.
+func finishRequest(c fiber.Ctx, span *tracer.Span, logger *slog.Logger, start time.Time, status int, err error) {
+	route := c.Route().Path
+
+	attrs := []slog.Attr{
+		slog.String(observability.KeyRoute, route),
+		slog.String(observability.KeyMethod, c.Method()),
+		slog.Int(observability.KeyStatus, status),
+		slog.Int(observability.KeyHTTPStatusCode, status),
+		slog.Float64(observability.KeyDurationMS, millisSince(start)),
+	}
+	if claims, ok := c.Locals("token").(*auth.AppClaims); ok && claims != nil {
+		attrs = append(attrs,
+			slog.String(observability.KeyUser, claims.User),
+			slog.String(observability.KeyRole, claims.Role))
+	}
+	if err != nil {
+		attrs = append(attrs, observability.Err(err))
+	}
+
+	logger.LogAttrs(c.Context(), accessLevel(status), "request", attrs...)
+
+	span.SetTag(ext.ResourceName, c.Method()+" "+route)
+	span.SetTag(ext.HTTPCode, status)
+	span.Finish(tracer.WithError(spanError(status, err)))
 }
 
 // resolveRequestID pega o identificador da borda, ou fabrica um.
