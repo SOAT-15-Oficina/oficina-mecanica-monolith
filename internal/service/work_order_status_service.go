@@ -72,13 +72,6 @@ func (s *workOrderStatusService) TransitionTo(ctx context.Context, workOrderID u
 		return wo, nil
 	}
 
-	// UM DOS DOIS GATILHOS DO ALERTA EXIGIDO PELA FASE.
-	//
-	// `datadog_monitor.work_order_processing_failure` dispara com
-	// `@event:work_order.transition_rejected` OU com qualquer ERROR que carregue
-	// `@work_order_id`. E por isso que a transicao recusada e um evento nomeado,
-	// e nao um `log.Printf` com o texto do erro: a query do alerta pergunta pelo
-	// nome, e nome nao muda quando alguem reescreve a mensagem.
 	if !s.IsValidTransition(previousStatus, newStatus) {
 		logger.LogAttrs(ctx, slog.LevelWarn, "invalid work order status transition",
 			observability.Event(observability.EventWorkOrderTransitionRejected),
@@ -110,9 +103,6 @@ func (s *workOrderStatusService) TransitionTo(ctx context.Context, workOrderID u
 	}
 
 	if transitioned {
-		// `duration_ms` aqui e o tempo passado no status ANTERIOR -- nao a
-		// duracao desta chamada. Agrupado por `@to`, e exatamente o painel de
-		// "tempo medio por status" que a fase pede.
 		logger.LogAttrs(ctx, slog.LevelInfo, "work order status changed",
 			observability.Event(observability.EventWorkOrderStatusChanged),
 			slog.String(observability.KeyWorkOrderID, workOrderID.String()),

@@ -2,13 +2,6 @@
 FROM golang:1.26.1-alpine AS build-stage
 WORKDIR /app
 
-# SHA do commit, gravado no binario pelo linker. E de la que sai o campo
-# `version` de toda linha de log e a tag `version` do APM.
-#
-# Vem do LINKER e nao de uma variavel de ambiente do container: variavel pode ser
-# trocada sem trocar a imagem, e o campo passaria a mentir sobre qual codigo
-# esta rodando -- que e exatamente a pergunta que ele existe para responder
-# quando uma regressao aparece no painel.
 ARG VERSION=dev
 
 COPY go.mod go.sum ./

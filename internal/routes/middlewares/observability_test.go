@@ -16,14 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A linha de acesso e a fonte de `oficina.http_request_duration`
-// (persistent/datadog_metrics.tf), e `request_id` e o que liga essa linha ao
-// access log do API Gateway. Os dois sao contrato com outro repositorio: quebra
-// aqui nao acende luz vermelha em lugar nenhum, so esvazia painel.
-
-// captureLogs troca o logger default por um que escreve num buffer, e o devolve
-// ao final. O middleware sai do default de proposito -- e o unico ponto do
-// codigo onde ainda nao ha logger de requisicao para herdar.
 func captureLogs(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	t.Setenv("DD_ENV", "prod")
@@ -80,9 +72,6 @@ func TestObservability_EmitsAccessLine(t *testing.T) {
 	assert.NotEmpty(t, line[observability.KeyRequestID])
 }
 
-// O PADRAO da rota, e nao o caminho concreto. Com o caminho, cada ordem de
-// servico viraria uma serie propria na metrica e o painel de latencia por rota
-// teria uma linha por OS.
 func TestObservability_LogsTheRoutePatternAndNotThePath(t *testing.T) {
 	buf := captureLogs(t)
 
@@ -92,9 +81,6 @@ func TestObservability_LogsTheRoutePatternAndNotThePath(t *testing.T) {
 	assert.Equal(t, "/work-orders/:id", accessLine(t, buf)[observability.KeyRoute])
 }
 
-// O valor do gateway vem por ULTIMO, porque ele e injetado com `append:`. Ler o
-// primeiro seria adotar como chave de correlacao um header que o cliente
-// controla.
 func TestObservability_UsesTheLastRequestIDHeader(t *testing.T) {
 	buf := captureLogs(t)
 
@@ -121,8 +107,6 @@ func TestObservability_SplitsACommaSeparatedRequestIDList(t *testing.T) {
 	assert.Equal(t, "valor-do-gateway", accessLine(t, buf)[observability.KeyRequestID])
 }
 
-// Este valor vai para header de resposta, tag de traco e toda linha de log da
-// requisicao. Aceitar bytes arbitrarios de um cliente e convidar injecao.
 func TestObservability_RejectsAnAbusiveRequestIDHeader(t *testing.T) {
 	for name, value := range map[string]string{
 		"caractere invalido": `id" injetado`,
@@ -145,8 +129,6 @@ func TestObservability_RejectsAnAbusiveRequestIDHeader(t *testing.T) {
 	}
 }
 
-// 5xx e erro, 4xx e aviso: e o que permite alertar sobre `status:error` sem
-// alertar sobre todo 404 de rota digitada errada.
 func TestObservability_AccessLineLevelFollowsTheStatus(t *testing.T) {
 	tests := map[string]struct {
 		path   string
@@ -172,8 +154,6 @@ func TestObservability_AccessLineLevelFollowsTheStatus(t *testing.T) {
 	}
 }
 
-// O kubelet chama /ping e /ready a cada poucos segundos em cada pod. Registrar
-// isso e pagar ingestao para dizer que nada aconteceu.
 func TestObservability_DoesNotLogHealthProbes(t *testing.T) {
 	buf := captureLogs(t)
 
@@ -184,8 +164,6 @@ func TestObservability_DoesNotLogHealthProbes(t *testing.T) {
 	assert.Empty(t, buf.String())
 }
 
-// O logger do contexto e o que os handlers repassam aos servicos. Sem ele, todo
-// log de dentro da aplicacao perde o `request_id` e a correlacao para na borda.
 func TestObservability_PutsTheRequestLoggerInTheContext(t *testing.T) {
 	buf := captureLogs(t)
 
@@ -211,16 +189,6 @@ func TestObservability_PutsTheRequestLoggerInTheContext(t *testing.T) {
 	assert.Equal(t, "id-do-gateway", serviceLine[observability.KeyRequestID])
 }
 
-// Um panico no handler e a requisicao que mais se quer ver, e e a unica que
-// hoje nao deixa rastro nenhum: esta aplicacao nao tem middleware de recover,
-// entao o panico sobe ate o fasthttp -- que NAO o captura -- e derruba o
-// processo. A linha de acesso passa a sair antes disso.
-//
-// O middleware de recover aqui e do TESTE, e nao da aplicacao: e o que permite
-// afirmar que o panico continua subindo depois de registrado (sem ele, o
-// re-panico derrubaria o binario de teste junto). Ligar recover em producao e
-// outra decisao, com outra consequencia -- 500 no lugar de pod reiniciado --,
-// e nao cabe num PR de observabilidade.
 func TestObservability_LogsAPanicAndRethrowsIt(t *testing.T) {
 	buf := captureLogs(t)
 
@@ -234,7 +202,6 @@ func TestObservability_LogsAPanicAndRethrowsIt(t *testing.T) {
 	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/panic", nil))
 	require.NoError(t, err)
 
-	// Chegou ao recover do teste: o panico atravessou o middleware.
 	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 
 	line := accessLine(t, buf)

@@ -188,9 +188,6 @@ jobs:
 
       - uses: aws-actions/amazon-ecr-login@v2
 
-      # O --build-arg VERSION grava o SHA no binario (ver o ARG no Dockerfile).
-      # E o campo `version` do log e a tag `version` do APM -- o que permite
-      # atribuir uma regressao a um deploy especifico.
       - name: Build and push image
         run: |
           IMAGE="${ECR_REPOSITORY_URL}:${GITHUB_SHA}"

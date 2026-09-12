@@ -155,10 +155,6 @@ func (s *workOrderItemService) evaluateWorkOrderCompletion(ctx context.Context, 
 	return nil
 }
 
-// O alerta de compra e o unico caminho aqui que nao tem quem o observe: ele
-// nasce de uma transicao ja concluida e nao devolve erro a ninguem. Sem log, um
-// alerta que parou de sair e indistinguivel de um alerta que nao precisava
-// sair -- e a diferenca aparece como insumo que ninguem comprou.
 func (s *workOrderItemService) sendPurchaseAlertIfNeeded(ctx context.Context, workOrderID uuid.UUID) {
 	logger := observability.FromContext(ctx).With(
 		slog.String(observability.KeyWorkOrderID, workOrderID.String()))
@@ -223,11 +219,6 @@ func (s *workOrderItemService) sendPurchaseAlertIfNeeded(ctx context.Context, wo
 		observability.Integration(observability.IntegrationSES))
 }
 
-// logApprovalDecision emite `approval.decided` -- o evento que conta as
-// decisoes do cliente sobre o orcamento (`oficina.approval_decided`).
-//
-// A decisao vai num campo proprio, e nao no `msg`: um evento que diz que houve
-// uma decisao sem dizer qual nao responde a unica pergunta que se faz dele.
 func logApprovalDecision(ctx context.Context, workOrderID uuid.UUID, decision string) {
 	observability.FromContext(ctx).LogAttrs(ctx, slog.LevelInfo, "customer decided on budget",
 		observability.Event(observability.EventApprovalDecided),

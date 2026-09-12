@@ -12,12 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Estes testes protegem um contrato que nenhum outro teste protege: os nomes
-// dos campos e dos eventos sao consumidos por consultas do Datadog que vivem em
-// outro repositorio (persistent/datadog_metrics.tf, persistent/datadog_monitors.tf).
-// Renomear `event` para `event_name` compilaria, passaria em toda a suite e
-// esvaziaria quatro paineis sem uma linha vermelha em lugar nenhum.
-
 func decodeLine(t *testing.T, buf *bytes.Buffer) map[string]any {
 	t.Helper()
 	var out map[string]any
@@ -40,8 +34,6 @@ func TestNew_EmitsFixedFieldsAsJSON(t *testing.T) {
 	assert.Equal(t, "INFO", line["level"])
 }
 
-// DD_ENV e a variavel que o Datadog entende e que o Terraform injeta;
-// SERVER_ENVIRONMENT e a que o resto da configuracao ja usava.
 func TestEnv_PrefersDDEnvAndFallsBackToServerEnvironment(t *testing.T) {
 	t.Setenv("DD_ENV", "prod")
 	t.Setenv("SERVER_ENVIRONMENT", "homolog")
@@ -54,8 +46,6 @@ func TestEnv_PrefersDDEnvAndFallsBackToServerEnvironment(t *testing.T) {
 	assert.Equal(t, EnvLocal, Env())
 }
 
-// Sem ambiente definido nao ha Datadog do outro lado -- e um humano lendo um
-// terminal, e JSON sem jq e ilegivel.
 func TestNew_UsesTextHandlerLocally(t *testing.T) {
 	t.Setenv("DD_ENV", "")
 	t.Setenv("SERVER_ENVIRONMENT", "")
@@ -83,9 +73,6 @@ func TestEventAndIntegrationUseTheContractedKeys(t *testing.T) {
 	assert.Equal(t, "ERROR", line["level"])
 }
 
-// Os nomes dos eventos sao literais nas queries do Terraform. Um teste de
-// igualdade e feio e e exatamente o ponto: mudar um deles tem de exigir mudar
-// tambem o repositorio de infraestrutura, no mesmo PR.
 func TestEventNamesMatchTheTerraformQueries(t *testing.T) {
 	assert.Equal(t, "work_order.created", EventWorkOrderCreated)
 	assert.Equal(t, "work_order.status_changed", EventWorkOrderStatusChanged)
@@ -116,16 +103,11 @@ func TestFromContext_ReturnsTheLoggerThatWasStored(t *testing.T) {
 	assert.Equal(t, "abc-123", decodeLine(t, &buf)[KeyRequestID])
 }
 
-// O caso que importa: um contexto sem logger nao pode derrubar o processo nem
-// engolir a linha. Acontece no boot, no job de migration e em todo teste que
-// nao passa pelo middleware.
 func TestFromContext_FallsBackToTheDefault(t *testing.T) {
 	assert.NotNil(t, FromContext(context.Background()))
 	assert.Equal(t, slog.Default(), FromContext(context.Background()))
 }
 
-// Sem DD_TRACE_ENABLED=true nao ha agente para receber traco -- e um tracer sem
-// destino gasta goroutine e enche o log de aviso de flush falhado.
 func TestStartTracer_IsANoOpWhenDisabled(t *testing.T) {
 	t.Setenv("DD_TRACE_ENABLED", "")
 

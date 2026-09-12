@@ -22,9 +22,6 @@ import (
 // replicas >= 2 e HPA ate 10: N processos disputando o mesmo DDL e corrida.
 // O pipeline do repo roda um Job com `migrate` antes do rollout.
 func main() {
-	// Antes de tudo: uma falha de boot tambem precisa sair estruturada. E o log
-	// que aparece quando o pod nao sobe -- se ele for texto livre, e justamente
-	// o incidente mais dificil que fica de fora da consulta.
 	observability.Setup()
 
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
@@ -49,9 +46,6 @@ func runMigrations() {
 func runServer() {
 	cfg := mustLoadConfig()
 
-	// O tracer sobe antes do primeiro span possivel e desce por ultimo, para o
-	// buffer ser esvaziado no shutdown. Sem DD_TRACE_ENABLED=true isto e um
-	// no-op -- ver observability.StartTracer.
 	stopTracer := observability.StartTracer(slog.Default())
 	defer stopTracer()
 
@@ -95,10 +89,6 @@ func newEmailProvider(cfg *config.Config) (email.Provider, error) {
 	})
 }
 
-// shutdownApp registra e derruba o processo. A mensagem sai como linha
-// estruturada, e nao em fmt.Println: um pod em CrashLoopBackOff e um dos poucos
-// casos em que o log e a UNICA evidencia, e ele precisa ser consultavel como o
-// resto.
 func shutdownApp(err error, message string, attrs ...slog.Attr) {
 	if err == nil {
 		return

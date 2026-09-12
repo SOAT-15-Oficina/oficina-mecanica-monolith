@@ -87,13 +87,6 @@ func (s *workOrderService) Create(ctx context.Context, wo *domain.WorkOrder) (*d
 		return nil, err
 	}
 
-	// O contador do painel "volume diario de ordens de servico"
-	// (`oficina.work_order_created`, persistent/datadog_metrics.tf).
-	//
-	// Nasce do LOG e nao de uma consulta ao banco, de proposito: o Datadog conta
-	// o evento na ingestao e guarda so o numero, com retencao de metrica em vez
-	// de retencao de log. O numero continua conferivel contra
-	// `COUNT(*) ... GROUP BY date(received_at)` quando alguem duvidar dele.
 	observability.FromContext(ctx).LogAttrs(ctx, slog.LevelInfo, "work order created",
 		observability.Event(observability.EventWorkOrderCreated),
 		slog.String(observability.KeyWorkOrderID, created.ID.String()),

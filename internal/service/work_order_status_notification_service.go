@@ -31,13 +31,6 @@ func NewWorkOrderStatusNotifier(
 	}
 }
 
-// A NOTIFICACAO NAO FALHA A OPERACAO -- mas passa a ser visivel quando falha.
-//
-// Nenhum caminho aqui devolve erro: a transicao de status ja aconteceu e ja foi
-// gravada, e desfaze-la porque um e-mail nao saiu seria trocar um problema
-// pequeno por um grande. Antes disto, porem, a falha ia para `log.Printf` e
-// morria ali. Agora cada uma carrega `@work_order_id`, que e o segundo gatilho
-// do alerta exigido pela fase (`status:error @work_order_id:*`).
 func (n *workOrderStatusNotifier) NotifyTransition(
 	ctx context.Context,
 	workOrder *domain.WorkOrder,
@@ -55,10 +48,6 @@ func (n *workOrderStatusNotifier) NotifyTransition(
 		slog.String(observability.KeyFrom, string(previousStatus)),
 		slog.String(observability.KeyTo, string(newStatus)))
 
-	// O orcamento tem evento proprio (`budget.sent`/`budget.send_failed`), que
-	// sai de dentro do budgetSvc. Aqui so sobra o erro que ele devolve, que e
-	// falha ANTES do envio -- montar o orcamento, achar o cliente, calcular o
-	// total.
 	if newStatus == domain.WorkOrderStatusWaitingApproval {
 		previous := previousStatus
 		if err := n.budgetSvc.GenerateAndSendBudget(ctx, workOrder.ID, &previous); err != nil {
@@ -69,8 +58,6 @@ func (n *workOrderStatusNotifier) NotifyTransition(
 		return
 	}
 
-	// Configuracao ausente, e nao falha: WARN, sem `@integration`. Ver o mesmo
-	// raciocinio em budget_service.go.
 	if n.statusSender == nil {
 		logger.WarnContext(ctx, "status change sender is not configured")
 		return

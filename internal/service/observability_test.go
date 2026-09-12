@@ -16,11 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Os dois eventos testados aqui sao os gatilhos do alerta que a fase exige
-// nominalmente -- `datadog_monitor.work_order_processing_failure` dispara com
-// `@event:work_order.transition_rejected` ou com `status:error @work_order_id:*`.
-// A query pergunta pelo NOME do evento, entao o nome e contrato, nao detalhe.
-
 func captureServiceLogs(t *testing.T) (context.Context, *bytes.Buffer) {
 	t.Helper()
 	t.Setenv("DD_ENV", "prod")
@@ -77,13 +72,9 @@ func TestTransitionTo_EmitsStatusChangedWithTimeSpentInThePreviousStatus(t *test
 	assert.Equal(t, string(domain.WorkOrderStatusInProgress), line[observability.KeyFrom])
 	assert.Equal(t, string(domain.WorkOrderStatusFinished), line[observability.KeyTo])
 
-	// 90 minutos em milissegundos, com folga para o relogio do teste.
 	assert.InDelta(t, 90*60*1000, line[observability.KeyDurationMS], 5000)
 }
 
-// O ALERTA EXIGIDO PELA FASE. A transicao recusada e um evento nomeado, e nao o
-// texto de uma mensagem de erro, para a query do alerta nao quebrar quando
-// alguem reescrever a mensagem.
 func TestTransitionTo_EmitsTransitionRejected(t *testing.T) {
 	ctx, buf := captureServiceLogs(t)
 
@@ -107,9 +98,6 @@ func TestTransitionTo_EmitsTransitionRejected(t *testing.T) {
 	assert.Equal(t, "WARN", line["level"])
 }
 
-// EM_DIAGNOSTICO nao tem coluna de timestamp propria -- e e onde a OS costuma
-// ficar parada. Sem o fallback para `updated_at`, seria a unica etapa ausente
-// do painel de tempo medio por status.
 func TestStatusEnteredAt_UsesTheStatusColumnAndFallsBackToUpdatedAt(t *testing.T) {
 	receivedAt := time.Now().Add(-4 * time.Hour)
 	quoteSentAt := time.Now().Add(-3 * time.Hour)
@@ -125,8 +113,6 @@ func TestStatusEnteredAt_UsesTheStatusColumnAndFallsBackToUpdatedAt(t *testing.T
 	assert.Equal(t, quoteSentAt, statusEnteredAt(wo, domain.WorkOrderStatusWaitingApproval))
 	assert.Equal(t, updatedAt, statusEnteredAt(wo, domain.WorkOrderStatusInDiagnosis))
 
-	// Coluna existe, mas esta vazia: cai no mesmo fallback em vez de reportar
-	// uma duracao contada a partir do ano zero.
 	assert.Equal(t, updatedAt, statusEnteredAt(wo, domain.WorkOrderStatusApproved))
 }
 

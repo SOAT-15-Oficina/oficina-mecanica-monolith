@@ -13,10 +13,6 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-// RunMigrations roda como Job do pipeline, antes do rollout (ADR-0005) -- nao
-// dentro do pod que serve trafego. O log dele e a unica evidencia de por que um
-// deploy parou, entao sai estruturado como o resto: `@integration:rds` poe a
-// falha no mesmo painel de erros de integracao das falhas em tempo de execucao.
 func RunMigrations(pool *pgxpool.Pool) {
 	ctx := context.Background()
 
