@@ -3,11 +3,12 @@ package service
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/application"
 	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/domain"
+	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/observability"
 	"github.com/google/uuid"
 )
 
@@ -106,15 +107,27 @@ func (s *budgetService) GenerateAndSendBudget(ctx context.Context, workOrderID u
 		RejectAllLink:       fmt.Sprintf("%s/public/approvals/work-orders/%s/reject-all", s.baseURL, workOrderID),
 	}
 
+	logger := observability.FromContext(ctx).With(
+		slog.String(observability.KeyWorkOrderID, workOrderID.String()),
+		slog.String(observability.KeyWorkOrderCode, wo.Code))
+
 	if s.notifier == nil {
-		log.Printf("budget: notifier not configured for work order %s", workOrderID)
+		logger.WarnContext(ctx, "budget notifier is not configured")
 		return nil
 	}
 
 	if err := s.notifier.SendBudget(ctx, notification); err != nil {
-		log.Printf("budget: send email for work order %s: %v", workOrderID, err)
+		logger.LogAttrs(ctx, slog.LevelError, "budget email failed",
+			observability.Event(observability.EventBudgetSendFailed),
+			observability.Integration(observability.IntegrationSES),
+			observability.Err(err))
+
 		return nil
 	}
+
+	logger.LogAttrs(ctx, slog.LevelInfo, "budget sent",
+		observability.Event(observability.EventBudgetSent),
+		observability.Integration(observability.IntegrationSES))
 
 	wo.TotalEstimatedPriceCents = totalCents
 	now := time.Now()

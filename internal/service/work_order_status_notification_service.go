@@ -2,10 +2,11 @@ package service
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/application"
 	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/domain"
+	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/observability"
 )
 
 type WorkOrderStatusNotifier interface {
@@ -13,9 +14,9 @@ type WorkOrderStatusNotifier interface {
 }
 
 type workOrderStatusNotifier struct {
-	custRepo      application.CustomerRepository
-	statusSender  application.StatusChangeSender
-	budgetSvc     BudgetService
+	custRepo     application.CustomerRepository
+	statusSender application.StatusChangeSender
+	budgetSvc    BudgetService
 }
 
 func NewWorkOrderStatusNotifier(
@@ -41,22 +42,32 @@ func (n *workOrderStatusNotifier) NotifyTransition(
 
 	newStatus := workOrder.Status
 
+	logger := observability.FromContext(ctx).With(
+		slog.String(observability.KeyWorkOrderID, workOrder.ID.String()),
+		slog.String(observability.KeyWorkOrderCode, workOrder.Code),
+		slog.String(observability.KeyFrom, string(previousStatus)),
+		slog.String(observability.KeyTo, string(newStatus)))
+
 	if newStatus == domain.WorkOrderStatusWaitingApproval {
 		previous := previousStatus
 		if err := n.budgetSvc.GenerateAndSendBudget(ctx, workOrder.ID, &previous); err != nil {
-			log.Printf("work order status notification: budget email failed for work order %s: %v", workOrder.ID, err)
+			logger.LogAttrs(ctx, slog.LevelError, "budget generation failed",
+				observability.Event(observability.EventBudgetSendFailed),
+				observability.Err(err))
 		}
 		return
 	}
 
 	if n.statusSender == nil {
-		log.Printf("work order status notification: sender not configured for work order %s", workOrder.ID)
+		logger.WarnContext(ctx, "status change sender is not configured")
 		return
 	}
 
 	customer, err := n.custRepo.FindByID(ctx, workOrder.CustomerID)
 	if err != nil {
-		log.Printf("work order status notification: find customer for work order %s: %v", workOrder.ID, err)
+		logger.LogAttrs(ctx, slog.LevelError, "find customer for status notification",
+			observability.Integration(observability.IntegrationRDS),
+			observability.Err(err))
 		return
 	}
 
@@ -68,7 +79,9 @@ func (n *workOrderStatusNotifier) NotifyTransition(
 		NewStatusLabel:      domain.WorkOrderStatusLabel(newStatus),
 		Message:             statusChangeMessage(previousStatus, newStatus),
 	}); err != nil {
-		log.Printf("work order status notification: send email for work order %s: %v", workOrder.ID, err)
+		logger.LogAttrs(ctx, slog.LevelError, "status change email failed",
+			observability.Integration(observability.IntegrationSES),
+			observability.Err(err))
 	}
 }
 

@@ -191,7 +191,8 @@ jobs:
       - name: Build and push image
         run: |
           IMAGE="${ECR_REPOSITORY_URL}:${GITHUB_SHA}"
-          docker build --tag "$IMAGE" --tag "${ECR_REPOSITORY_URL}:latest" .
+          docker build --build-arg "VERSION=${GITHUB_SHA}" \
+            --tag "$IMAGE" --tag "${ECR_REPOSITORY_URL}:latest" .
           docker push "$IMAGE"
           docker push "${ECR_REPOSITORY_URL}:latest"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"

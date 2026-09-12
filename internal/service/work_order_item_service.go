@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/application"
 	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/domain"
+	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/observability"
 	"github.com/google/uuid"
 )
 
@@ -64,6 +66,8 @@ func (s *workOrderItemService) ApproveService(ctx context.Context, workOrderServ
 		return fmt.Errorf("approve: update status: %w", err)
 	}
 
+	logApprovalDecision(ctx, wos.WorkOrderID, observability.DecisionApproved)
+
 	return s.evaluateWorkOrderCompletion(ctx, wos.WorkOrderID)
 }
 
@@ -81,6 +85,8 @@ func (s *workOrderItemService) RejectService(ctx context.Context, workOrderServi
 		return fmt.Errorf("reject: update status: %w", err)
 	}
 
+	logApprovalDecision(ctx, wos.WorkOrderID, observability.DecisionRejected)
+
 	return s.evaluateWorkOrderCompletion(ctx, wos.WorkOrderID)
 }
 
@@ -89,6 +95,8 @@ func (s *workOrderItemService) ApproveAllByWorkOrder(ctx context.Context, workOr
 		return fmt.Errorf("approve all: update status: %w", err)
 	}
 
+	logApprovalDecision(ctx, workOrderID, observability.DecisionApproved)
+
 	return s.evaluateWorkOrderCompletion(ctx, workOrderID)
 }
 
@@ -96,6 +104,8 @@ func (s *workOrderItemService) RejectAllByWorkOrder(ctx context.Context, workOrd
 	if err := s.wosRepo.UpdateApprovalStatusByWorkOrderID(ctx, workOrderID, domain.WorkOrderServiceApprovalRejected); err != nil {
 		return fmt.Errorf("reject all: update status: %w", err)
 	}
+
+	logApprovalDecision(ctx, workOrderID, observability.DecisionRejected)
 
 	return s.evaluateWorkOrderCompletion(ctx, workOrderID)
 }
@@ -146,18 +156,36 @@ func (s *workOrderItemService) evaluateWorkOrderCompletion(ctx context.Context, 
 }
 
 func (s *workOrderItemService) sendPurchaseAlertIfNeeded(ctx context.Context, workOrderID uuid.UUID) {
+	logger := observability.FromContext(ctx).With(
+		slog.String(observability.KeyWorkOrderID, workOrderID.String()))
+
 	shortages, err := s.wosRepo.FindSupplyShortagesByWorkOrderID(ctx, workOrderID)
-	if err != nil || len(shortages) == 0 {
+	if err != nil {
+		logger.LogAttrs(ctx, slog.LevelError, "find supply shortages",
+			observability.Integration(observability.IntegrationRDS),
+			observability.Err(err))
+		return
+	}
+	if len(shortages) == 0 {
 		return
 	}
 
 	alerts, err := s.wosRepo.FindApprovedServicesWithShortages(ctx)
-	if err != nil || len(alerts) == 0 {
+	if err != nil {
+		logger.LogAttrs(ctx, slog.LevelError, "find approved services with shortages",
+			observability.Integration(observability.IntegrationRDS),
+			observability.Err(err))
+		return
+	}
+	if len(alerts) == 0 {
 		return
 	}
 
 	wo, err := s.woRepo.FindByID(ctx, workOrderID)
 	if err != nil {
+		logger.LogAttrs(ctx, slog.LevelError, "find work order for purchase alert",
+			observability.Integration(observability.IntegrationRDS),
+			observability.Err(err))
 		return
 	}
 
@@ -172,10 +200,28 @@ func (s *workOrderItemService) sendPurchaseAlertIfNeeded(ctx context.Context, wo
 		})
 	}
 
-	_ = s.alerts.SendPurchaseAlert(ctx, application.PurchaseAlertNotification{
+	if err := s.alerts.SendPurchaseAlert(ctx, application.PurchaseAlertNotification{
 		To:             s.alertTo,
 		WorkOrderCode:  wo.Code,
 		WorkOrderTitle: wo.Title,
 		Items:          items,
-	})
+	}); err != nil {
+		logger.LogAttrs(ctx, slog.LevelError, "purchase alert email failed",
+			slog.String(observability.KeyWorkOrderCode, wo.Code),
+			observability.Integration(observability.IntegrationSES),
+			observability.Err(err))
+		return
+	}
+
+	logger.LogAttrs(ctx, slog.LevelInfo, "purchase alert sent",
+		observability.Event(observability.EventPurchaseAlertSent),
+		slog.String(observability.KeyWorkOrderCode, wo.Code),
+		observability.Integration(observability.IntegrationSES))
+}
+
+func logApprovalDecision(ctx context.Context, workOrderID uuid.UUID, decision string) {
+	observability.FromContext(ctx).LogAttrs(ctx, slog.LevelInfo, "customer decided on budget",
+		observability.Event(observability.EventApprovalDecided),
+		slog.String(observability.KeyWorkOrderID, workOrderID.String()),
+		slog.String(observability.KeyDecision, decision))
 }

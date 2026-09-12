@@ -20,6 +20,8 @@ type databasePinger interface {
 }
 
 func RegisterRoutes(app *fiber.App, db *pgxpool.Pool, cfg *config.Config, emailProv email.Provider) {
+	app.Use(middlewares.Observability())
+
 	if db == nil {
 		registerHealthRoutes(app, nil)
 	} else {

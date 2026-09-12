@@ -1,9 +1,12 @@
 package database
 
 import (
-	"log"
+	"context"
+	"log/slog"
+	"os"
 
 	dbmigrations "github.com/SOAT-15-Oficina/oficina-mecanica-monolith/database"
+	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/observability"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/lib/pq"
@@ -11,18 +14,25 @@ import (
 )
 
 func RunMigrations(pool *pgxpool.Pool) {
+	ctx := context.Background()
+
 	goose.SetBaseFS(dbmigrations.Migrations)
 
 	if err := goose.SetDialect("postgres"); err != nil {
-		log.Fatalf("Failed to set goose dialect: %v", err)
+		fatal(ctx, "failed to set goose dialect", err)
 	}
 
 	db := stdlib.OpenDBFromPool(pool)
 	defer db.Close()
 
 	if err := goose.Up(db, "migrations"); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+		fatal(ctx, "failed to run migrations", err, observability.Integration(observability.IntegrationRDS))
 	}
 
-	log.Println("Migrations applied successfully")
+	slog.InfoContext(ctx, "migrations applied successfully")
+}
+
+func fatal(ctx context.Context, message string, err error, attrs ...slog.Attr) {
+	slog.LogAttrs(ctx, slog.LevelError, message, append(attrs, observability.Err(err))...)
+	os.Exit(1)
 }

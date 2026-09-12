@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"time"
 
 	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/application"
 	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/domain"
+	"github.com/SOAT-15-Oficina/oficina-mecanica-monolith/internal/observability"
 	"github.com/google/uuid"
 )
 
@@ -78,8 +80,18 @@ func (s *workOrderService) Create(ctx context.Context, wo *domain.WorkOrder) (*d
 
 	created, err := s.repo.Create(ctx, wo)
 	if err != nil {
+		observability.FromContext(ctx).LogAttrs(ctx, slog.LevelError, "create work order failed",
+			observability.Integration(observability.IntegrationRDS),
+			observability.Err(err))
+
 		return nil, err
 	}
+
+	observability.FromContext(ctx).LogAttrs(ctx, slog.LevelInfo, "work order created",
+		observability.Event(observability.EventWorkOrderCreated),
+		slog.String(observability.KeyWorkOrderID, created.ID.String()),
+		slog.String(observability.KeyWorkOrderCode, created.Code))
+
 	return s.repo.FindByID(ctx, created.ID)
 }
 
