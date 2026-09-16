@@ -92,7 +92,7 @@ func (h *CustomerHandler) Update(c fiber.Ctx) error {
 }
 
 func (h *CustomerHandler) handleServiceError(c fiber.Ctx, err error) error {
-	if handled, resp := dbErrResponse(c, err, "customer not found"); handled {
+	if handled, resp := dbErrResponse(c, err, "customer not found."); handled {
 		return resp
 	}
 	switch {

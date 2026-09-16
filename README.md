@@ -1,7 +1,7 @@
 # oficina-mecanica-monolith
 
 API REST de gerenciamento da oficina: ordens de serviço, orçamentos, catálogos
-(clientes, veículos, serviços, insumos) e manutenção administrativa de usuários.
+(clientes, veículos, serviços, insumos, etc) e manutenção administrativa de usuários.
 
 Go 1.26 + Fiber v3, arquitetura hexagonal, PostgreSQL. Roda no EKS.
 
